@@ -9,7 +9,7 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./*"],
-      "shared/*": ["../../packages/shared/*"]  // ✅ alias 추가
+      "@/shared/*": ["../../packages/shared/*"]  // ✅ alias 추가
     }
   },
   "include": [
