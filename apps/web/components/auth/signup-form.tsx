@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/shared/api/supabaseClient'
 import { Button } from '@/components/ui/button'
@@ -32,7 +32,6 @@ const passwordRequirements: PasswordRequirement[] = [
     label: '숫자 포함',
     test: (password) => /\d/.test(password),
   },
-  // 특수문자는 제거 (백엔드에서만 체크하거나 보너스로 처리)
 ]
 
 export function SignUpForm() {
@@ -40,6 +39,12 @@ export function SignUpForm() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showPasswordRequirements, setShowPasswordRequirements] = useState(false)
+  
+  // 닉네임 중복 체크 상태
+  const [isCheckingUsername, setIsCheckingUsername] = useState(false)
+  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null)
+  const [usernameCheckTimeout, setUsernameCheckTimeout] = useState<NodeJS.Timeout | null>(null)
+  
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -47,6 +52,59 @@ export function SignUpForm() {
     username: '',
     fullName: '',
   })
+
+  // 닉네임 중복 체크 함수
+  const checkUsernameAvailability = async (username: string) => {
+    if (!username || username.length < 2) {
+      setUsernameAvailable(null)
+      return
+    }
+
+    setIsCheckingUsername(true)
+    
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('username')
+        .eq('username', username)
+        .single()
+
+      if (error && error.code === 'PGRST116') {
+        // 데이터가 없음 = 사용 가능
+        setUsernameAvailable(true)
+      } else if (data) {
+        // 데이터가 있음 = 이미 사용 중
+        setUsernameAvailable(false)
+      }
+    } catch (err) {
+      console.error('닉네임 중복 체크 오류:', err)
+    } finally {
+      setIsCheckingUsername(false)
+    }
+  }
+
+  // 닉네임 입력 시 debounce를 적용한 중복 체크
+  useEffect(() => {
+    if (usernameCheckTimeout) {
+      clearTimeout(usernameCheckTimeout)
+    }
+
+    if (formData.username) {
+      const timeout = setTimeout(() => {
+        checkUsernameAvailability(formData.username)
+      }, 500) // 500ms 후에 체크
+
+      setUsernameCheckTimeout(timeout)
+    } else {
+      setUsernameAvailable(null)
+    }
+
+    return () => {
+      if (usernameCheckTimeout) {
+        clearTimeout(usernameCheckTimeout)
+      }
+    }
+  }, [formData.username])
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({
@@ -67,7 +125,6 @@ export function SignUpForm() {
 
   // 필수 비밀번호 조건 충족 여부
   const isPasswordValid = () => {
-    // 모든 조건이 필수 (특수문자 제거됨)
     return passwordRequirements.every((req) => req.test(formData.password))
   }
 
@@ -80,6 +137,17 @@ export function SignUpForm() {
   const validateForm = () => {
     if (!formData.email || !formData.password || !formData.username || !formData.fullName) {
       setError('모든 필드를 입력해주세요.')
+      return false
+    }
+
+    // 닉네임 중복 체크
+    if (usernameAvailable === false) {
+      setError('이미 사용 중인 닉네임입니다.')
+      return false
+    }
+
+    if (usernameAvailable === null) {
+      setError('닉네임 중복 확인이 필요합니다.')
       return false
     }
 
@@ -112,7 +180,7 @@ export function SignUpForm() {
     setError(null)
 
     try {
-      // 1. Supabase Auth로 회원가입
+      // 1. Supabase Auth로 회원가입 (metadata에 username, full_name 포함)
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: formData.email,
         password: formData.password,
@@ -130,18 +198,9 @@ export function SignUpForm() {
         throw new Error('회원가입에 실패했습니다.')
       }
 
-      // 2. users 테이블 업데이트 (username, full_name 추가)
-      const { error: updateError } = await supabase
-        .from('users')
-        .update({
-          username: formData.username,
-          full_name: formData.fullName,
-        })
-        .eq('id', authData.user.id)
+      // 트리거가 자동으로 users 테이블에 레코드를 생성합니다
 
-      if (updateError) throw updateError
-
-      // 3. 성공 - 로그인 페이지로 이동
+      // 2. 성공 - 로그인 페이지로 이동
       alert('회원가입이 완료되었습니다! 로그인해주세요.')
       router.push('/login')
 
@@ -186,17 +245,52 @@ export function SignUpForm() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="username">사용자명</Label>
-            <Input
-              id="username"
-              name="username"
-              type="text"
-              placeholder="username"
-              value={formData.username}
-              onChange={handleChange}
-              disabled={isLoading}
-              required
-            />
+            <Label htmlFor="username">닉네임</Label>
+            <div className="relative">
+              <Input
+                id="username"
+                name="username"
+                type="text"
+                placeholder="닉네임 (2자 이상)"
+                value={formData.username}
+                onChange={handleChange}
+                disabled={isLoading}
+                required
+                className={
+                  formData.username.length >= 2
+                    ? usernameAvailable === true
+                      ? 'border-green-500'
+                      : usernameAvailable === false
+                      ? 'border-red-500'
+                      : ''
+                    : ''
+                }
+              />
+              {isCheckingUsername && (
+                <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-gray-400" />
+              )}
+            </div>
+            
+            {/* 닉네임 중복 체크 피드백 */}
+            {formData.username.length >= 2 && !isCheckingUsername && usernameAvailable !== null && (
+              <div className="flex items-center gap-2 text-sm mt-2">
+                {usernameAvailable ? (
+                  <>
+                    <Check className="h-4 w-4 text-green-600" />
+                    <span className="text-green-600">
+                      사용 가능한 닉네임입니다
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <X className="h-4 w-4 text-red-600" />
+                    <span className="text-red-600">
+                      이미 사용 중인 닉네임입니다
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -296,7 +390,13 @@ export function SignUpForm() {
           <Button 
             type="submit" 
             className="w-full" 
-            disabled={isLoading || !isPasswordValid() || !passwordMatch}
+            disabled={
+              isLoading || 
+              !isPasswordValid() || 
+              !passwordMatch || 
+              usernameAvailable !== true ||
+              isCheckingUsername
+            }
           >
             {isLoading ? (
               <>
